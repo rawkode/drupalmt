@@ -1,0 +1,37 @@
+This script was written to handle my own personal Drupal set-ups. It was made to be as simple and efficient.
+
+My Drupal set-up:
+-----------------
+
+Make a directory to contain all your git clones, I use /opt/drupal. Within this folder I have the following:
+
+ - 7.x
+   - core
+     - 7.x
+     - 7.10
+  - modules
+    - ctools
+    - token
+    - etc
+  - themes
+    - tao
+    - rubik
+    - etc
+
+- 8.x
+  - core
+    - 8.x
+  - modules
+  - themes
+
+
+Example Commands:
+-----------------
+
+drupal init -v 7.x -s 7.10
+drupal enmod token
+drupal dismod token
+drupal entheme tao
+drupal distheme tao
+drupal rebuild
+

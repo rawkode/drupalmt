@@ -1,0 +1,535 @@
+#!/bin/bash
+
+### Name   : Drupal Site Management Script
+### Author : David McKay <david@rawkode.com>
+### Updated: 24-02-2012
+### Version: v1.5
+
+### TODO
+# N/A
+
+### ChangeLog
+
+## 16-01-2012 - David McKay
+# Drupal clones moved to /opt rather than /var/www/drupal
+# Ability to use specific Drupal versions (7.10) or to follow a version (7.x)
+
+## 13-01-2012 - David McKay
+# All new directory structure to control themes and modules across major versions of Drupal
+
+## 16-12-2011 - David McKay
+# Updated script to include hostname options
+
+## 14-12-2011 - David McKay
+# Initial version of management script
+
+
+## ########################################################################## ##
+##                           CONFIGURATION                                    ##
+## ########################################################################## ##
+DRUPAL_ROOT='/opt/drupal'
+DRUPAL_VERS='7.x'
+DRUPAL_VERS_SPEC='7.x'
+DRUPAL_MODS="$DRUPAL_ROOT/$DRUPAL_VERS/modules"
+DRUPAL_THMS="$DRUPAL_ROOT/$DRUPAL_VERS/themes"
+
+DB_CREATE=0
+DB_NAME=''
+DB_USER=''
+DB_PASS=''
+
+DOC_ROOT='web'
+
+CUR_DIR=`pwd`
+
+## ########################################################################## ##
+##                            USER-CALLED FUNCTIONS                           ##
+## ########################################################################## ##
+
+## usage: Display command line arguments to the user
+usage() {
+	printf " Usage: `basename $0` <action> [options]\n\n"
+	printf "\tAvailable actions: init, list, enmod, entheme, dismod, distheme\n\n"
+	printf "\tinit [-v drupal_version] [-s drupal_version_specific] [-d database_name] [-u database_user] [-h hostname]\n"
+	printf "\tlist [themes|modules]\n"
+	printf "\tenmod <module_name>\n"
+	printf "\tdismod <module_name>\n"
+	printf "\tentheme <theme_name>\n"
+	printf "\tdistheme <theme_name>\n"
+	printf "\trebuild\n"
+	exit
+}
+
+## init: Initialise a new Drupal site with a specific version or use default
+##  			value stated above
+init() {
+	## If the drupal directory exists then we will bail before we cause damage
+	if [ -d drupal ]
+	then
+		error "Drupal folder already exists" 1 ## exit on error is only performed when arg(2) is 1
+	fi
+
+	## We need these directories
+	create_directory $DOC_ROOT
+	create_directory 'logs'
+	create_directory 'sites/default'
+  create_directory 'sites/all/modules/contrib'
+  create_directory 'sites/all/modules/custom'
+  create_directory 'sites/all/themes/contrib'
+  create_directory 'sites/all/themes/custom'
+
+	if [ -n "$SITE_HOSTNAME" ]
+	then
+		if [ -d "sites/$SITE_HOSTNAME" ]
+		then
+			create_directory "sites/$SITE_HOSTNAME"
+		fi
+	fi
+
+  # Uploads
+  create_directory "uploads/public"
+  create_directory "uploads/private"
+  chmod 777 -R uploads
+
+	# Link up our versiob of Drupal
+	symlink-drupal
+
+  # Settings
+	cp drupal/sites/default/default.settings.php sites/default/settings.php
+
+	# File upload directory
+	echo "\$conf['file_public_path']  = 'uploads';" >> sites/default/settings.php
+	echo "\$conf['file_private_path'] = '$CUR_DIR/uploads/private';" >> sites/default/settings.php
+	echo >> sites/default/settings.php
+  info "Please change the ownership of the uploads folder to your web server"
+  info "Drupal set-up successfully"
+
+	# Enable user-selected modules
+	cd $DRUPAL_MODS
+	modules=`ls`
+	cd $CUR_DIR
+
+	for module in $modules
+	do
+		echo -ne "Would you like to enable the contrib module '$COLCYNB$module$COLOFF' : (Y/N) "
+		read -n 1 -s yes
+		echo
+		if [[ $yes = 'Y' || $yes = 'y' ]]
+		then
+			enable_module $module
+		fi
+	done
+	info "Module set-up completed successfully"
+
+	# Enable user-selected themes
+	cd $DRUPAL_THMS
+	themes=`ls`
+	cd $CUR_DIR
+
+	for theme in $themes
+	do
+		echo -ne "Would you like to enable the contrib theme '$COLYELB$theme$COLOFF' : (Y/N) "
+		read -n 1 -s yes
+		echo
+		if [[ $yes = 'Y' || $yes = 'y' ]]
+		then
+			enable_theme $theme
+		fi
+	done
+	info "Theme set-up completed successfully"
+
+	if [ "$DB_CREATE" -eq 1 ]
+	then
+		create_database
+	fi
+
+	if [ -n "$DB_NAME" ]
+	then
+	  # Database set-up seems complete - change configuration
+  	FIND='$databases = array();'
+	  REPLACE="\$databases['default']['default'] = array(\n  'driver'  => 'mysql',\n  'database'  => '$DB_NAME',\n  'username'  => '$DB_USER',\n  'password'  => '$DB_USER',\n  'host'  => 'localhost'\n);"
+  	sed -i "s/$FIND/$REPLACE/g" sites/default/settings.php
+	  info "Database configuration completed successfully - Please change the password and update the Drupal settings file accordingly"
+	fi
+
+	echo >> sites/default/settings.php
+	info "Configured file upload directory to : $CUR_DIR/uploads"
+
+	# Put settings file inside hostname configuration is possible
+	if [ -n "$SITE_HOSTNAME" ]
+	then
+		echo "\$conf['site_default_country'] = 'GB';" >> sites/$SITE_HOSTNAME/settings.php
+	else
+		echo "\$conf['site_default_country'] = 'GB';" >> sites/default/settings.php
+	fi
+
+	# $base_url = 'http://www.example.com';  // NO trailing slash!
+	# This doesn't work as Drupal install uses the system's default time zone and we don't want to edit core
+	#echo "\$conf['date_default_timezone'] = 'Europe/London';" >> sites/default/settings.php
+
+	cat <<EOT >.gitignore
+$DOC_ROOT
+logs
+drupal
+uploads
+sites/all/modules/contrib
+sites/all/themes/contrib
+INFO.txt
+EOT
+	info "Git Ignores created"
+}
+
+## list: Print a list of themes or modules that can be enabled or disabled
+list() {
+	if [ $# -eq "0" ]
+	then
+		usage
+	fi
+
+	CUR_DIR=`pwd`
+
+	case $1 in
+		themes)
+			cd $DRUPAL_THMS
+			for theme in *
+			do
+				if [ -d $CUR_DIR/sites/all/themes/contrib/$theme ]
+				then
+					echo -ne "$COLGRN$theme$COLOFF "
+				else
+					echo -ne "$COLRED$theme$COLOFF "
+				fi
+			done
+			echo
+		;;
+		modules)
+			cd $DRUPAL_MODS
+			for module in *
+			do
+				if [ -d $CUR_DIR/sites/all/modules/contrib/$module ]
+				then
+					echo -ne "$COLGRN$module$COLOFF "
+				else
+					echo -ne "$COLRED$module$COLOFF "
+				fi
+			done
+			echo
+		;;
+		drupal)
+			cd $DRUPAL_ROOT
+			for version in *
+			do
+				if [[ `readlink $CUR_DIR/drupal` = *$version ]]
+				then
+					echo -ne "$COLGRN$version$COLOFF "
+				else
+					echo -ne "$COLRED$version$COLOFF "
+				fi
+			done
+			echo
+			;;
+		*) usage;;
+	esac
+}
+
+## enmod: Allows the user to enable a contrib module
+enmod() {
+	enable_module $1
+}
+
+## dismod: Allows the user to disable a contrib module
+dismod() {
+	disable_module $1
+}
+
+## entheme: Allows the user to enable a contrib theme
+entheme() {
+	enable_theme $1
+}
+
+## distheme: Allows the user to disable a contrib theme
+distheme() {
+	disable_theme $1
+}
+
+symlink-drupal() {
+  ## Let the user know what version of drupal they've selected or we're defaulted too
+  info "Initialising project structure with Drupal v${DRUPAL_VERS}"
+  ln -s $DRUPAL_ROOT/$DRUPAL_VERS/core/$DRUPAL_VERS_SPEC drupal
+
+	if [ $? -ne "0" ]
+	then
+		error "Could not create drupal symlink - aborting" 1
+	fi
+
+	#
+	cd $DOC_ROOT
+	ln -s ../sites sites
+	ln -s ../uploads/public uploads
+	cd ..
+
+	## Symlink all drupals files and folders except for sites and profiles
+	for file in $DRUPAL_ROOT/$DRUPAL_VERS/core/$DRUPAL_VERS_SPEC/*
+	do
+		if [[ $file != *sites ]]
+		then
+			ln -s $file $DOC_ROOT/
+		fi
+	done
+
+	# Let's not forget .htaccess
+	ln -s $DRUPAL_ROOT/$DRUPAL_VERS/core/$DRUPAL_VERS_SPEC/.htaccess $DOC_ROOT/.htaccess
+}
+
+vchange() {
+	warn "Changing to Drupal v$DRUPAL_VERS"
+	rm -f $DOC_ROOT/* $DOC_ROOT/.htaccess
+	rm -f drupal
+	symlink-drupal
+}
+
+create_database() {
+	if [ -n "$DB_NAME" ]
+	then
+		`mysql -uroot -e "create database $DB_NAME" 2>/dev/null`
+		if [ $? -ne "0" ]
+		then
+			error "Failed to create database" 1
+		else
+			if [ -n "$DB_USER" ]
+			then
+				`mysql -uroot -e "grant all on $DB_NAME.* to $DB_USER@localhost identified by '$DB_USER'" 2>/dev/null`
+				`mysql -u$DB_USER -p$DB_USER $DB_NAME -e "show tables" 2>/dev/null`
+				if [ $? -ne "0" ]
+				then
+					error "Tried to confirm credentials and failed: mysql -u$DB_USER -p$DB_USER $DB_NAME" 1
+				fi
+			fi
+		fi
+	else
+		warn "No database credentials passed - skipping creation"
+	fi
+}
+## ########################################################################## ##
+##                       STYLED OUTPUT FUNCTIONS                              ##
+## ########################################################################## ##
+
+## info: Display an information message - nothing too scary
+info() {
+	printf " [ ${COLYELB}%-10s${COLOFF} ] %s\n" "info" "$1"
+}
+
+## warn: Display an warning message - make sure it stands out!
+error() {
+	printf " [ ${COLWHTB}- ${COLREDB}%-7s${COLWHTB}-${COLOFF} ] %s\n" "ERROR" "$1"
+	if [ $2 -eq 1 ]
+	then
+		exit
+	fi
+}
+
+## error: Display an error message - make sure it stands out!
+warn() {
+	printf " [ ${COLYEL}%-10s${COLOFF} ] %s\n" "warning" "$1"
+}
+
+## ########################################################################## ##
+##                       THEME AND MODULE ACTIONS                             ##
+## ########################################################################## ##
+
+rebuild() {
+	info "Rebuilding contrib modules and themes ..."
+
+	# Modules
+	while read line; do
+		enable_module $line
+	done < MODULES.txt
+
+	# Themes
+	while read line; do
+		enable_theme $line
+	done < THEMES.txt
+}
+
+enable_module() {
+	printf " [ ${COLGRN}%-10s${COLOFF} ] %s\n" "enabling" "Enabling module '$1'"
+
+	if [ ! -d $DRUPAL_MODS/$1 ]
+	then
+		error "Can't find module '$1' - Please add it to the central repository first." 1
+	fi
+
+	if [ -d sites/all/modules/contrib/$1 ]
+	then
+		info "Module '$1' is already enabled; skipping ..."
+	fi
+
+	ln -s $DRUPAL_MODS/$1 sites/all/modules/contrib/ 2>/dev/null
+	if [ $? -ne 0 ]
+	then
+		error "There was a problem enabling this module" 0
+		return
+	fi
+
+  # Add a line to MODULES.txt
+  echo $1 >> MODULES.txt
+  sort -u MODULES.txt -o MODULES.txt
+}
+
+disable_module() {
+	if [ ! -d "sites/all/modules/contrib/$1" ]
+	then
+		error "No module named '$1' is currently enabled for this site." 1
+	fi
+
+	printf " [ ${COLRED}%-10s${COLOFF} ] %s\n" "disabling" "Disabling module '$1'"
+	rm sites/all/modules/contrib/$1 2>/dev/null
+	if [ $? -ne 0 ]
+	then
+		error "There was a problem disabling this module" 0
+		return
+	fi
+
+	sed -i "/$1/d" MODULES.txt
+}
+
+enable_theme() {
+	printf " [ ${COLGRN}%-10s${COLOFF} ] %s\n" "enabling" "Enabling theme '$1'"
+
+	if [ ! -d $DRUPAL_THMS/$1 ]
+	then
+		error "Can't find theme '$1' - Please add it to the central repository first." 1
+	fi
+
+	if [ -d sites/all/themes/contrib/$1 ]
+	then
+		info "Theme '$1' is already enabled; skipping ..."
+	fi
+
+	ln -s $DRUPAL_THMS/$1 sites/all/themes/contrib/ 2>/dev/null
+	if [ $? -ne 0 ]
+	then
+		error "There was a problem enabling this theme" 0
+		return
+	fi
+
+  # Add a line to THEMES.txt
+  echo $1 >> THEMES.txt
+  sort -u THEMES.txt -o THEMES.txt
+}
+
+disable_theme() {
+	if [ ! -d "sites/all/themes/contrib/$1" ]
+	then
+		error "No theme named '$1' is currently enabled for this site." 1
+	fi
+
+	printf " [ ${COLRED}%-10s${COLOFF} ] %s\n" "disabling" "Disabling theme '$1'"
+	rm sites/all/themes/contrib/$1 2>/dev/null
+	if [ $? -ne 0 ]
+	then
+		error "There was a problem disabling this theme" 0
+		return
+	fi
+
+	sed -i "/$1/d" THEMES.txt
+}
+
+## ########################################################################## ##
+##                       GENERAL HELPER FUNCTIONS                             ##
+## ########################################################################## ##
+
+create_directory() {
+	if [ ! -d $1 ]
+	then
+		mkdir -p $1
+		if [ $? -ne "0" ]
+		then
+			error "There was a problem creating the directory: $1" 1
+		fi
+	fi
+}
+
+## ########################################################################## ##
+##                             COLOURS                                        ##
+## ########################################################################## ##
+
+COLOFF='\e[0m' 			# Text Reset
+COLBLA='\e[0;30m' 	# Black
+COLRED='\e[0;31m'		# Red
+COLGRN='\e[0;32m'		# Green
+COLYEL='\e[0;33m'		# Yellow
+COLBLU='\e[0;34m'		# Blue
+COLPUR='\e[0;35m'		# Purple
+COLCYN='\e[0;36m'		# Cyan
+COLWHT='\e[0;37m'		# White
+COLBLAB='\e[1;30m'	# Black
+COLREDB='\e[1;31m'	# Red
+COLGRNB='\e[1;32m'	# Green
+COLYELB='\e[1;33m'	# Yellow
+COLBLUB='\e[1;34m'	# Blue
+COLPURB='\e[1;35m'	# Purple
+COLCYNB='\e[1;36m'	# Cyan
+COLWHTB='\e[1;37m'	# White
+
+## ########################################################################## ##
+##                                RUN                                         ##
+## ########################################################################## ##
+
+if [ $# -eq "0" ]
+then
+	usage
+fi
+
+if [[ $1 == -* ]]
+then
+	usage
+fi
+
+action=$1
+shift
+
+# Parse args
+while getopts ":v:d:u:s:c:" OPTION
+do
+	case $OPTION in
+	v)
+		DRUPAL_VERS=$OPTARG
+		if [ ! -d $DRUPAL_ROOT/$DRUPAL_VERS ]
+		then
+			echo $DRUPAL_ROOT/$DRUPAL_VERS
+			error "Sorry but that version of drupal is not available" 1
+		fi
+		;;
+	s)
+		DRUPAL_VERS_SPEC=$OPTARG
+		echo $DRUPAL_ROOT/$DRUPAL_VERS/core/$DRUPAL_VERS_SPEC
+		if [ ! -d $DRUPAL_ROOT/$DRUPAL_VERS/core/$DRUPAL_VERS_SPEC ]
+		then
+			error "Sorry but that version of drupal is not available" 1
+		fi
+		;;
+	c)
+		DB_CREATE=1
+		;;
+	d)
+		DB_NAME=$OPTARG
+		;;
+	u)
+		DB_USER=$OPTARG
+		;;
+	h)
+		SITE_HOSTNAME=$OPTARG
+		;;
+	?)
+		usage
+		;;
+	esac
+done
+
+echo " -- This Drupal web site was configured using the automation script --" > INFO.txt
+echo " -- Drupal v$DRUPAL_VERS_SPEC" >> INFO.txt
+echo " --" >> INFO.txt
+
+$action $@
+##
