@@ -2,13 +2,20 @@
 
 ### Name   : Drupal Site Management Script
 ### Author : David McKay <david@rawkode.com>
-### Updated: 24-02-2012
-### Version: v1.5
+### Updated: 15-03-2012
+### Version: v1.6
 
 ### TODO
 # N/A
 
 ### ChangeLog
+
+## 15-03-2012 - David McKay
+# A DRUPAL.txt file is now created and the rebuild command will rebuild the Drupal structure
+# Checks in place to make sure contrib folder exists under themes and modules prior to rebuild
+
+## 23-02-2012 - David McKay
+# A MODULES.txt and THEMES.txt file is now maintained and the 'rebuild' command implemented
 
 ## 16-01-2012 - David McKay
 # Drupal clones moved to /opt rather than /var/www/drupal
@@ -38,7 +45,7 @@ DB_NAME=''
 DB_USER=''
 DB_PASS=''
 
-DOC_ROOT='web'
+DOC_ROOT='public_html'
 
 CUR_DIR=`pwd`
 
@@ -56,7 +63,6 @@ usage() {
 	printf "\tdismod <module_name>\n"
 	printf "\tentheme <theme_name>\n"
 	printf "\tdistheme <theme_name>\n"
-	printf "\trebuild\n"
 	exit
 }
 
@@ -104,39 +110,51 @@ init() {
   info "Please change the ownership of the uploads folder to your web server"
   info "Drupal set-up successfully"
 
-	# Enable user-selected modules
-	cd $DRUPAL_MODS
-	modules=`ls`
-	cd $CUR_DIR
+  if [ -n "$DRUPAL_PROFILE" ]
+  then
+  	echo $DRUPAL_ROOT/$DRUPAL_VERS/profiles/$DRUPAL_PROFILE
+  	if [ -d "$DRUPAL_ROOT/$DRUPAL_VERS/profiles/$DRUPAL_PROFILE" ]
+  	then
+	  	cp $DRUPAL_ROOT/$DRUPAL_VERS/profiles/$DRUPAL_PROFILE/* .
+	  	rebuild
+	  else
+	  	error "Could not find that Drupal profile." 0
+  	fi
+  else
+		# Enable user-selected modules
+		cd $DRUPAL_MODS
+		modules=`ls`
+		cd $CUR_DIR
 
-	for module in $modules
-	do
-		echo -ne "Would you like to enable the contrib module '$COLCYNB$module$COLOFF' : (Y/N) "
-		read -n 1 -s yes
-		echo
-		if [[ $yes = 'Y' || $yes = 'y' ]]
-		then
-			enable_module $module
-		fi
-	done
-	info "Module set-up completed successfully"
+		for module in $modules
+		do
+			echo -ne "Would you like to enable the contrib module '$COLCYNB$module$COLOFF' : (Y/N) "
+			read -n 1 -s yes
+			echo
+			if [[ $yes = 'Y' || $yes = 'y' ]]
+			then
+				enable_module $module
+			fi
+		done
+		info "Module set-up completed successfully"
 
-	# Enable user-selected themes
-	cd $DRUPAL_THMS
-	themes=`ls`
-	cd $CUR_DIR
+		# Enable user-selected themes
+		cd $DRUPAL_THMS
+		themes=`ls`
+		cd $CUR_DIR
 
-	for theme in $themes
-	do
-		echo -ne "Would you like to enable the contrib theme '$COLYELB$theme$COLOFF' : (Y/N) "
-		read -n 1 -s yes
-		echo
-		if [[ $yes = 'Y' || $yes = 'y' ]]
-		then
-			enable_theme $theme
-		fi
-	done
-	info "Theme set-up completed successfully"
+		for theme in $themes
+		do
+			echo -ne "Would you like to enable the contrib theme '$COLYELB$theme$COLOFF' : (Y/N) "
+			read -n 1 -s yes
+			echo
+			if [[ $yes = 'Y' || $yes = 'y' ]]
+			then
+				enable_theme $theme
+			fi
+		done
+		info "Theme set-up completed successfully"
+	fi
 
 	if [ "$DB_CREATE" -eq 1 ]
 	then
@@ -168,7 +186,7 @@ init() {
 	#echo "\$conf['date_default_timezone'] = 'Europe/London';" >> sites/default/settings.php
 
 	cat <<EOT >.gitignore
-$DOC_ROOT
+public_html
 logs
 drupal
 uploads
@@ -279,6 +297,9 @@ symlink-drupal() {
 
 	# Let's not forget .htaccess
 	ln -s $DRUPAL_ROOT/$DRUPAL_VERS/core/$DRUPAL_VERS_SPEC/.htaccess $DOC_ROOT/.htaccess
+
+	# Create DRUPAL.txt
+	echo "$DRUPAL_VERS/$DRUPAL_VERS_SPEC" > DRUPAL.txt
 }
 
 vchange() {
@@ -298,6 +319,7 @@ create_database() {
 		else
 			if [ -n "$DB_USER" ]
 			then
+				`mysql -uroot -e "create user '$DB_USER'@'localhost' identified by '$DB_USER'" 2>/dev/null`
 				`mysql -uroot -e "grant all on $DB_NAME.* to $DB_USER@localhost identified by '$DB_USER'" 2>/dev/null`
 				`mysql -u$DB_USER -p$DB_USER $DB_NAME -e "show tables" 2>/dev/null`
 				if [ $? -ne "0" ]
@@ -338,7 +360,24 @@ warn() {
 ## ########################################################################## ##
 
 rebuild() {
-	info "Rebuilding contrib modules and themes ..."
+	info "Rebuilding drupal symlinks and contrib modules and themes ..."
+
+	# Check for contrib folders - not stored in git
+	if [ ! -d "sites/all/modules/contrib" ]
+	then
+		create_directory 'sites/all/modules/contrib'
+	fi
+
+	if [ ! -d "sites/all/themes/contrib" ]
+	then
+		create_directory 'sites/all/themes/contrib'
+	fi
+
+	# Drupal
+	$DRUPAL_STRING=`cat DRUPAL.txt`
+	DRUPAL_VERS=${DRUPAL_STRING%/*}
+	DRUPAL_VERS_SPEC=${DRUPAL_STRING#*/}
+	symlink-drupal
 
 	# Modules
 	while read line; do
@@ -361,7 +400,8 @@ enable_module() {
 
 	if [ -d sites/all/modules/contrib/$1 ]
 	then
-		info "Module '$1' is already enabled; skipping ..."
+		info "Module '$1' is already enabled for this project; skipping" 0
+		return
 	fi
 
 	ln -s $DRUPAL_MODS/$1 sites/all/modules/contrib/ 2>/dev/null
@@ -371,9 +411,9 @@ enable_module() {
 		return
 	fi
 
-  # Add a line to MODULES.txt
-  echo $1 >> MODULES.txt
-  sort -u MODULES.txt -o MODULES.txt
+	# Add a line to MODULES.txt
+	echo $1 >> MODULES.txt
+	sort -u MODULES.txt -o MODULES.txt
 }
 
 disable_module() {
@@ -389,7 +429,6 @@ disable_module() {
 		error "There was a problem disabling this module" 0
 		return
 	fi
-
 	sed -i "/$1/d" MODULES.txt
 }
 
@@ -403,7 +442,8 @@ enable_theme() {
 
 	if [ -d sites/all/themes/contrib/$1 ]
 	then
-		info "Theme '$1' is already enabled; skipping ..."
+		info "Theme '$1' is already enabled for this project; skipping"
+		return
 	fi
 
 	ln -s $DRUPAL_THMS/$1 sites/all/themes/contrib/ 2>/dev/null
@@ -413,9 +453,9 @@ enable_theme() {
 		return
 	fi
 
-  # Add a line to THEMES.txt
-  echo $1 >> THEMES.txt
-  sort -u THEMES.txt -o THEMES.txt
+	# Add a line to MODSULES.txt
+	echo $1 >> THEMES.txt
+	sort -u THEMES.txt -o THEMES.txt
 }
 
 disable_theme() {
@@ -431,7 +471,6 @@ disable_theme() {
 		error "There was a problem disabling this theme" 0
 		return
 	fi
-
 	sed -i "/$1/d" THEMES.txt
 }
 
@@ -490,7 +529,7 @@ action=$1
 shift
 
 # Parse args
-while getopts ":v:d:u:s:c:" OPTION
+while getopts "v:s:d:u:h:p:c" OPTION
 do
 	case $OPTION in
 	v)
@@ -503,7 +542,6 @@ do
 		;;
 	s)
 		DRUPAL_VERS_SPEC=$OPTARG
-		echo $DRUPAL_ROOT/$DRUPAL_VERS/core/$DRUPAL_VERS_SPEC
 		if [ ! -d $DRUPAL_ROOT/$DRUPAL_VERS/core/$DRUPAL_VERS_SPEC ]
 		then
 			error "Sorry but that version of drupal is not available" 1
@@ -521,15 +559,14 @@ do
 	h)
 		SITE_HOSTNAME=$OPTARG
 		;;
+	p)
+		DRUPAL_PROFILE=$OPTARG
+		;;
 	?)
 		usage
 		;;
 	esac
 done
-
-echo " -- This Drupal web site was configured using the automation script --" > INFO.txt
-echo " -- Drupal v$DRUPAL_VERS_SPEC" >> INFO.txt
-echo " --" >> INFO.txt
 
 $action $@
 ##

@@ -1,4 +1,5 @@
 This script was written to handle my own personal Drupal set-ups. It was made to be as simple and efficient.
+I am aware that drush is out there and does a lot more but for me it seemed to be a bit overkill for my needs.
 
 My Drupal set-up:
 -----------------
@@ -29,6 +30,8 @@ Example Commands:
 -----------------
 
 drupal init -v 7.x -s 7.10
+drupal init -v 7.x -s 7.10 -d db_name -u db_user
+drupal init -v 7.x -s 7.10 -c -d db_name -u db_user
 drupal enmod token
 drupal dismod token
 drupal entheme tao
